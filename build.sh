@@ -67,6 +67,7 @@ PROFILE_CONF="${CONFIG}"
 # derive the human profile label from the kas config filename so ROBOT_TYPE
 # defaults to the selected profile (mirrors the TUI's config_for_profile)
 case "$(basename "${CONFIG}")" in
+  uav.yml) PROFILE="uav";;
   turtlebot3.yml) PROFILE="turtlebot3";;
   *) PROFILE="generic";;
 esac

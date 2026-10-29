@@ -32,6 +32,11 @@ Install kas (e.g., `pip install kas`) and ensure git, python3 are available.
 ./build.sh --config configs/kas/build-config.yml --machine raspberrypi4-64
 ```
 
+**Build the UAV image (includes MAVLink Router):**
+```bash
+./build.sh --config configs/kas/uav.yml --machine raspberrypi4-64
+```
+
 **Preview generated conf only:**
 ```bash
 ./build.sh --config configs/kas/build-config.yml --machine raspberrypi4-64 --dry-run
@@ -55,8 +60,10 @@ The project now uses kas workspace configs in configs/kas/. Use the build wrappe
 to generate conf/local.conf from conf/local.conf.template and run kas.
 
 - configs/kas/generic.yml  — base kas workspace (poky, meta-openembedded, meta-raspberrypi, meta-robot)
+- configs/kas/uav.yml — UAV profile; installs MAVLink Router by default
 - configs/kas/turtlebot3.yml — includes generic.yml and adds meta-ros
-- The generic profile builds `robot-image` without TurtleBot3 or OpenCR.
+- The generic profile builds `robot-image` without MAVLink Router, TurtleBot3, or OpenCR.
+- The UAV profile builds `robot-image` with MAVLink Router.
 - The TurtleBot3 profile builds `robot-image-ros`; OpenCR is enabled for that
   profile and can be disabled with `--opencr-enabled 0`.
 - conf/local.conf.template — template; build.sh fills values and writes conf/local.conf
@@ -68,8 +75,12 @@ The default general-purpose companion image includes:
 
 - Developer toolchain: `cargo`, `rust`, `gcc`, `g++`, `clang`, `cmake`
 - Python stack: `python3`, `python3-pip`, `python3-venv`, plus `python`/`pip` symlinks
+- MAVLink: `mavlink-router` is installed in the UAV profile
 - Research utilities: `git`, `curl`, `wget`, `htop`, `tmux`, `net-tools`, `iproute2`, `usbutils`, `i2c-tools`, `vim-tiny`, `rsync`, `ca-certificates`, `iw`
 - Network/VPN: `tailscale`, SSH server, WiFi/netplan setup
+
+All images add `$HOME/.local/bin` to the login-shell `PATH`, so user-installed
+Python command-line tools such as Meson are available without extra setup.
 
 These groups can be enabled or disabled independently in the TUI or via `build.sh` flags:
 

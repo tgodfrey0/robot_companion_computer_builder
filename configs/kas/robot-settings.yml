@@ -25,7 +25,7 @@ local_conf_header:
     LICENSE_FLAGS_ACCEPTED:append = " commercial"
 
   robot-settings: |
-    ROBOT_TYPE = "generic"
+    ROBOT_TYPE = "uav"
     ROBOT_MODEL = "generic"
     HOSTNAME_PREFIX = "uav"
     BRINGUP_COMMAND = ""

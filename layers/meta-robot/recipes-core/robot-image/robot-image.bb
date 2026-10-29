@@ -7,3 +7,7 @@ require robot-image.inc
 
 SUMMARY = "Base robot image"
 DESCRIPTION = "Minimal robot image without ROS2 support"
+
+IMAGE_INSTALL:append = " \
+    ${@oe.utils.conditional('ROBOT_TYPE', 'uav', 'mavlink-router', '', d)} \
+    "

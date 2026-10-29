@@ -19,6 +19,11 @@ do_install() {
     install -d ${D}${sysconfdir}/robot-config
     install -d ${D}${sysconfdir}/sudoers.d
 
+    install -d ${D}${sysconfdir}/profile.d
+    cat > ${D}${sysconfdir}/profile.d/00-local-bin-path.sh << 'EOF'
+export PATH="$HOME/.local/bin:$PATH"
+EOF
+
     echo "${ROBOT_USER}" > ${D}${sysconfdir}/robot-user
     echo "${HOSTNAME_PREFIX}" > ${D}${sysconfdir}/robot-config/hostname_prefix
 
@@ -38,6 +43,7 @@ FILES:${PN} = " \
     ${sysconfdir}/robot-user \
     ${sysconfdir}/robot-config/hostname_prefix \
     ${sysconfdir}/sudoers.d/${ROBOT_USER} \
+    ${sysconfdir}/profile.d/00-local-bin-path.sh \
     /home/${ROBOT_USER}/.ssh/authorized_keys \
 "
 

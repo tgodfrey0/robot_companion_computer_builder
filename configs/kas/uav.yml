@@ -1,0 +1,12 @@
+header:
+  version: 14
+  includes:
+    - generic.yml
+
+machine: raspberrypi5
+distro: uav-companion
+target: robot-image
+
+local_conf_header:
+  uav-image: |
+    ROBOT_TYPE = "uav"

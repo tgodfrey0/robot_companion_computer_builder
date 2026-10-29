@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Sender};
@@ -51,7 +52,7 @@ struct App {
 
     output: Vec<String>,
     building: bool,
-    build_pid: Option<u32>,
+    process_group_id: Option<u32>,
     build_started: Option<Instant>,
     build_exit_code: Option<i32>,
     build_count: usize,
@@ -85,11 +86,11 @@ impl Default for App {
             python_tools: true,
             research_tools: true,
             enable_uart: false,
-            message: "Enter=edit/select, Space=toggle, i=import, a=add-wifi, p=preview, e=export, b=build, q=quit".into(),
+            message: "Enter=edit/select, Space=toggle, i=import, a=add-wifi, p=preview, e=export, b=build, q=quit/stop task".into(),
             mode: Mode::Normal,
             output: Vec::new(),
             building: false,
-            build_pid: None,
+            process_group_id: None,
             build_started: None,
             build_exit_code: None,
             build_count: 0,
@@ -156,13 +157,14 @@ fn models_for_profile(profile: &str) -> Vec<String> {
 /// shared robot-settings.yml fragment, the right layers, distro and target).
 fn config_for_profile(profile: &str) -> &'static str {
     match profile {
+        "uav" => "configs/kas/uav.yml",
         "turtlebot3" => "configs/kas/turtlebot3.yml",
         _ => "configs/kas/build-config.yml",
     }
 }
 
 fn robot_types() -> Vec<String> {
-    vec!["generic".into(), "turtlebot3".into()]
+    vec!["generic".into(), "uav".into(), "turtlebot3".into()]
 }
 
 /// Patch only the top-level `machine:` scalar of the selected profile yml.
@@ -297,107 +299,59 @@ fn find_build_sh() -> Option<PathBuf> {
 }
 
 fn spawn_build(tx: Sender<String>, args: Vec<String>) {
-    thread::spawn(move || {
-        if let Some(build) = find_build_sh() {
-            let mut cmd = Command::new(build);
-            cmd.args(&args);
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-            match cmd.spawn() {
-                Ok(mut child) => {
-                    let pid = child.id();
-                    let _ = tx.send(format!("__BUILD_PID__:{}", pid));
-                    if let Some(out) = child.stdout.take() {
-                        let txo = tx.clone();
-                        thread::spawn(move || {
-                            let reader = BufReader::new(out);
-                            for line in reader.lines() {
-                                let l = line.unwrap_or_default();
-                                let _ = txo.send(l);
-                            }
-                        });
-                    }
-                    if let Some(err) = child.stderr.take() {
-                        let txe = tx.clone();
-                        thread::spawn(move || {
-                            let reader = BufReader::new(err);
-                            for line in reader.lines() {
-                                let l = line.unwrap_or_default();
-                                let _ = txe.send(l);
-                            }
-                        });
-                    }
-                    match child.wait() {
-                        Ok(status) => {
-                            let code = status.code().unwrap_or(-1);
-                            let _ = tx.send(format!("__BUILD_DONE__:{}", code));
-                        }
-                        Err(e) => {
-                            let _ = tx.send(format!("Build failed to wait: {}", e));
-                            let _ = tx.send("__BUILD_DONE__:-1".to_string());
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(format!("Failed to spawn build: {}", e));
-                    let _ = tx.send("__BUILD_DONE__:-1".to_string());
-                }
-            }
-        } else {
-            let _ = tx.send("build.sh not found".to_string());
-            let _ = tx.send("__BUILD_DONE__:-1".to_string());
-        }
-    });
+    spawn_task(tx, args, "BUILD");
 }
 
 fn spawn_preview(tx: Sender<String>, args: Vec<String>) {
-    thread::spawn(move || {
-        if let Some(build) = find_build_sh() {
-            let mut cmd = Command::new(build);
-            cmd.args(&args);
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-            match cmd.spawn() {
-                Ok(mut child) => {
-                    if let Some(out) = child.stdout.take() {
-                        let txo = tx.clone();
-                        thread::spawn(move || {
-                            let reader = BufReader::new(out);
-                            for line in reader.lines() {
-                                let l = line.unwrap_or_default();
-                                let _ = txo.send(l);
-                            }
-                        });
+    spawn_task(tx, args, "PREVIEW");
+}
+
+fn spawn_task(tx: Sender<String>, args: Vec<String>, task: &'static str) {
+    let done_marker = format!("__{}_DONE__:", task);
+    let Some(build) = find_build_sh() else {
+        let _ = tx.send("build.sh not found".to_string());
+        let _ = tx.send(format!("{}-1", done_marker));
+        return;
+    };
+
+    let mut cmd = Command::new(build);
+    cmd.args(&args);
+    cmd.process_group(0);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let _ = tx.send(format!("__{}_PID__:{}", task, child.id()));
+            if let Some(out) = child.stdout.take() {
+                let txo = tx.clone();
+                thread::spawn(move || {
+                    for line in BufReader::new(out).lines() {
+                        let _ = txo.send(line.unwrap_or_default());
                     }
-                    if let Some(err) = child.stderr.take() {
-                        let txe = tx.clone();
-                        thread::spawn(move || {
-                            let reader = BufReader::new(err);
-                            for line in reader.lines() {
-                                let l = line.unwrap_or_default();
-                                let _ = txe.send(l);
-                            }
-                        });
+                });
+            }
+            if let Some(err) = child.stderr.take() {
+                let txe = tx.clone();
+                thread::spawn(move || {
+                    for line in BufReader::new(err).lines() {
+                        let _ = txe.send(line.unwrap_or_default());
                     }
-                    match child.wait() {
-                        Ok(status) => {
-                            let code = status.code().unwrap_or(-1);
-                            let _ = tx.send(format!("__PREVIEW_DONE__:{}", code));
-                        }
-                        Err(e) => {
-                            let _ = tx.send(format!("Preview failed to wait: {}", e));
-                            let _ = tx.send("__PREVIEW_DONE__:-1".to_string());
-                        }
-                    }
+                });
+            }
+            thread::spawn(move || match child.wait() {
+                Ok(status) => {
+                    let _ = tx.send(format!("{}{}", done_marker, status.code().unwrap_or(-1)));
                 }
                 Err(e) => {
-                    let _ = tx.send(format!("Failed to spawn preview: {}", e));
-                    let _ = tx.send("__PREVIEW_DONE__:-1".to_string());
+                    let _ = tx.send(format!("{} failed to wait: {}", task.to_lowercase(), e));
+                    let _ = tx.send(format!("{}-1", done_marker));
                 }
-            }
-        } else {
-            let _ = tx.send("build.sh not found".to_string());
-            let _ = tx.send("__PREVIEW_DONE__:-1".to_string());
+            });
         }
-    });
+        Err(e) => {
+            let _ = tx.send(format!("Failed to spawn {}: {}", task.to_lowercase(), e));
+            let _ = tx.send(format!("{}-1", done_marker));
+        }
+    }
 }
 
 fn run_zenity<F>(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, f: F) -> Option<String>
@@ -424,6 +378,17 @@ where
     terminal.clear().ok()?;
 
     result
+}
+
+fn terminate_process_group(pgid: u32) {
+    let pgid = -(pgid as i32);
+    unsafe {
+        libc::kill(pgid, libc::SIGTERM);
+    }
+    thread::sleep(Duration::from_millis(500));
+    unsafe {
+        libc::kill(pgid, libc::SIGKILL);
+    }
 }
 
 fn build_common_args(app: &App) -> Vec<String> {
@@ -475,11 +440,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         while let Ok(line) = rx.try_recv() {
             if line.starts_with("__BUILD_PID__:") {
                 if let Some(pid) = line.split(':').nth(1).and_then(|s| s.parse().ok()) {
-                    app.build_pid = Some(pid);
+                    app.process_group_id = Some(pid);
+                }
+            } else if line.starts_with("__PREVIEW_PID__:") {
+                if let Some(pid) = line.split(':').nth(1).and_then(|s| s.parse().ok()) {
+                    app.process_group_id = Some(pid);
                 }
             } else if line.starts_with("__BUILD_DONE__:") {
                 app.building = false;
-                app.build_pid = None;
+                app.process_group_id = None;
                 app.build_started = None;
                 app.build_count += 1;
                 if let Some(code) = line.split(':').nth(1).and_then(|s| s.parse().ok()) {
@@ -487,6 +456,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     app.message = format!("Build finished (exit {})", code);
                 }
             } else if line.starts_with("__PREVIEW_DONE__:") {
+                app.process_group_id = None;
                 if let Some(code) = line.split(':').nth(1) {
                     if let Mode::Previewing { lines: _, done } = &mut app.mode {
                         *done = true;
@@ -602,7 +572,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ListItem::new(Spans::from(Span::raw("b: build"))),
                 ListItem::new(Spans::from(Span::raw("i: import"))),
                 ListItem::new(Spans::from(Span::raw("a: add WiFi"))),
-                ListItem::new(Spans::from(Span::raw("q: quit"))),
+                ListItem::new(Spans::from(Span::raw("q: quit/stop task"))),
                 ListItem::new(Spans::from(Span::raw(""))),
                 ListItem::new(Spans::from(Span::raw("Enter: edit/select"))),
                 ListItem::new(Spans::from(Span::raw("Space: toggle"))),
@@ -671,22 +641,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         let timeout = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or_else(|| Duration::from_secs(0));
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('q')
+                    && !matches!(&app.mode, Mode::Editing { .. } | Mode::WifiAdd { .. })
+                {
+                    if let Some(pgid) = app.process_group_id {
+                        terminate_process_group(pgid);
+                    }
+                    break;
+                }
                 match &mut app.mode {
                     Mode::Normal => match key.code {
-                        KeyCode::Char('q') => {
-                            if let Some(pid) = app.build_pid {
-                                // Kill the entire process group
-                                if let Ok(out) = Command::new("ps").args(["-o", "pgid=", "-p", &pid.to_string()]).output() {
-                                    if let Ok(pgid) = String::from_utf8_lossy(&out.stdout).trim().parse::<i32>() {
-                                        let _ = Command::new("kill").args(["-TERM", &format!("-{}", pgid)]).status();
-                                    }
-                                }
-                                // Fallback: kill the process directly
-                                let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
-                                app.message = "Killed build process".into();
-                            }
-                            break;
-                        }
                         KeyCode::Down => { app.selected = (app.selected + 1) % app.field_count(); }
                         KeyCode::Up => { app.selected = if app.selected == 0 { app.field_count()-1 } else { app.selected -1 }; }
                         KeyCode::Char('a') => {
@@ -906,8 +870,21 @@ mod tests {
     #[test]
     fn profiles_map_to_curated_configs() {
         assert_eq!(config_for_profile("generic"), "configs/kas/build-config.yml");
+        assert_eq!(config_for_profile("uav"), "configs/kas/uav.yml");
         assert_eq!(config_for_profile("turtlebot3"), "configs/kas/turtlebot3.yml");
         assert_eq!(config_for_profile("anything-else"), "configs/kas/build-config.yml");
+    }
+
+    #[test]
+    fn quitting_terminates_the_entire_task_process_group() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        command.process_group(0);
+        let mut child = command.spawn().unwrap();
+
+        terminate_process_group(child.id());
+
+        assert!(!child.wait().unwrap().success());
     }
 
     #[test]
